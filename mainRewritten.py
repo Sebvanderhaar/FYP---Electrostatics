@@ -7,6 +7,7 @@ import pygame
 import sys
 import math
 
+iters = 0
 
 class Charge:
     def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple):
@@ -40,6 +41,18 @@ class Line:
         for startPos, endPos in zip(self.points, self.points[1:]):
             pygame.draw.line(surface, self.colour, startPos, endPos, self.width)
 
+def GetForce(r: np.ndarray) -> np.ndarray:
+    k = 1/(4*np.pi*cnst.epsilon_0)
+
+    force: np.ndarray = np.zeros(2)
+
+    for charge in chargeList:
+        r1: np.ndarray = r - charge.position
+        r1MagCubed: float = np.linalg.norm(r1)**3 
+        force += k*charge.magnitude*(r1/r1MagCubed)
+    
+    return force
+
 def CreateCharges() -> list:
     constRadius = 5
     constColour = (200,200,200)
@@ -62,7 +75,8 @@ def dfdx(t: float, f: np.ndarray) -> np.ndarray:
 
     return f
 
-def CreateFieldLines() -> list:
+def CreateFieldLinesSolveIVP() -> list:
+    global iters
     def dfdx(t: float, f: np.ndarray) -> np.ndarray:
         fout: np.ndarray = np.array([0,0], dtype=np.float64)
 
@@ -75,7 +89,7 @@ def CreateFieldLines() -> list:
 
     def stop_near_charge(t, f):
         min_distance = 5 # Set the minimum distance to stop the line
-        infinity = 1000
+        infinity = 100000
         for charge in chargeList:
             distance = np.linalg.norm(f - charge.position)
             if distance < min_distance or np.linalg.norm(f - [500,500]) > infinity:
@@ -86,7 +100,7 @@ def CreateFieldLines() -> list:
     stop_near_charge.direction = -1
 
     constLinesPerUnitCharge = 8
-    constMaxT = 1000
+    constMaxT = 10000
 
     k = 1/(4*np.pi*cnst.epsilon_0)
     fieldLineList = []
@@ -99,12 +113,14 @@ def CreateFieldLines() -> list:
                 initPos: np.ndarray = np.array([initX, initY])
 
                 timeSpan = [0, constMaxT]
-                num_points = 1000  # Choose the number of points you want
+                num_points = 1000
                 t_eval = np.linspace(timeSpan[0], timeSpan[1], num_points)
 
-                #start = datetime.datetime.now()
+                start = datetime.datetime.now()
                 solution = solve_ivp(dfdx, timeSpan, initPos, method='RK23', events=stop_near_charge, t_eval=t_eval)
-                #print(datetime.datetime.now() - start)
+                print(datetime.datetime.now() - start)
+
+                iters += 1
 
                 fieldLine = Line(np.stack(solution.y, axis=-1))
                 fieldLineList.append(fieldLine)
@@ -122,24 +138,8 @@ def CreateFieldLinesODE() -> list:
 
         return fout
     
-    def f_derivative(t, f):
-        x, y = f  # Unpack current x and y positions
-        fx, fy = 0, 0  # Initialize derivatives
-
-        for i in range(len(chargePositions)):
-            dx, dy = x - chargePositions[i][0], y - chargePositions[i][1]
-            distance_cubed = (dx**2 + dy**2)**1.5
-
-            fx += k * chargeMagnitudes[i] * dx / distance_cubed
-            fy += k * chargeMagnitudes[i] * dy / distance_cubed
-
-        return [fx, fy]
-    
     constLinesPerUnitCharge = 8
     constMaxT = 5.005
-
-    chargePositions = [charge.position for charge in chargeList]
-    chargeMagnitudes = [charge.magnitude for charge in chargeList]
     k = 1 / (4 * np.pi * cnst.epsilon_0)
     fieldLineList = []
 
@@ -172,6 +172,43 @@ def CreateFieldLinesODE() -> list:
         
         return fieldLineList
 
+def CreateFieldLinesIter() -> list:
+    linesPerUnitCharge = 8
+    initRadius = 50
+    dl = 10
+
+    fieldLineList = []
+
+    for charge in chargeList:
+        if charge.magnitude > 0:
+            for i in range(charge.magnitude * linesPerUnitCharge):
+                initX: float = charge.position[0] + np.cos(i * 2 * np.pi / (charge.magnitude * linesPerUnitCharge)) * initRadius
+                initY: float = charge.position[1] + np.sin(i * 2 * np.pi / (charge.magnitude * linesPerUnitCharge)) * initRadius
+                initPos: np.ndarray = np.array([initX, initY])
+
+                solutionArray: list = []
+
+                solutionArray.append(initPos)
+
+                ended: bool = False
+
+                currentPos: np.ndarray = initPos
+
+                while not ended:
+                    force: np.ndarray = GetForce(currentPos)
+                    forceMag: float = np.linalg.norm(force)
+                    endPos: np.ndarray = currentPos + (force/forceMag) * dl
+                    solutionArray.append(endPos)
+                    
+                    for charge in chargeList:
+                        if np.linalg.norm(endPos - charge.position) < 10 or np.linalg.norm(endPos) > 2000:
+                            ended = True
+                    currentPos = endPos
+                
+                fieldLine: Line = Line(np.array(solutionArray))
+                fieldLineList.append(fieldLine)
+
+    return fieldLineList
 
 windowSize: list = [1000, 1000]
 
@@ -184,6 +221,7 @@ font = pygame.font.Font(None, 30)
 chargeList = CreateCharges()
 
 while True:
+    iters = 0
     screen.fill((0, 0, 0))
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -193,7 +231,7 @@ while True:
             charge.HandleDragging(event)
 
 
-    fieldLineList = CreateFieldLines()
+    fieldLineList = CreateFieldLinesIter()
 
 
     for charge in chargeList:
@@ -205,6 +243,8 @@ while True:
     fps = int(clock.get_fps())
     fps_text = font.render(f"FPS: {fps}", True, (255, 255, 255))
     screen.blit(fps_text, (10, 10))  # Display at top-left corner
+
+    print(iters)
 
     clock.tick(165)
     pygame.display.flip()
