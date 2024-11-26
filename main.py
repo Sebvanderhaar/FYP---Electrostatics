@@ -208,7 +208,6 @@ def DrawCharges(surface: pygame.surface, chargeArray: np.ndarray) -> None:
     for charge in chargeArray:
         pygame.draw.circle(surface, colour, charge[1], radius)
 
-
 def DrawFieldLines(surface: pygame.surface, chargeArray: np.ndarray) -> None:
     linesPerUnitCharge = 8
     for charge in chargeArray:
