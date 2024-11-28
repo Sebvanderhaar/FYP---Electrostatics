@@ -8,12 +8,12 @@ import sys
 import math
 import time
 import ctypes
-from openGLBit import *
-import glfw
-import glm
+#from openGLBit import *
+#import glfw
+#import glm
 import numpy as np
-from OpenGL.GL import *
-from OpenGL.GL.shaders import compileShader, compileProgram
+#from OpenGL.GL import *
+#from OpenGL.GL.shaders import compileShader, compileProgram
 
 class Charge:
     def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple):
@@ -186,7 +186,7 @@ def CreateFieldLinesODE() -> list: #Not currently working
 def CreateFieldLinesIter() -> list: #1 - 12ms per line
     linesPerUnitCharge = 8
     initRadius = 5
-    dl = 5
+    dl = 10
 
     fieldLineList = []
 
@@ -262,7 +262,6 @@ def ConvertChargeListToC(chargeList) -> ctypes.Array:
 
     return ChargeCArrayType(*chargeListC)
 
-
 def CreateFieldLinesOpenGL() -> list:
     linesPerUnitCharge = 8
     initRadius = 5
@@ -316,7 +315,7 @@ def CreateFieldLinesOpenGL() -> list:
     return fieldLineList
 
 
-program, shader = initOpenGL()
+#program, shader = initOpenGL()
 
 
 iterationMethod = ctypes.CDLL("./iterationMethod.dll")
@@ -345,8 +344,13 @@ while True:
             charge.HandleDragging(event)
 
 
-    fieldLineList = CreateFieldLinesOpenGL()
+    #Change solving method by uncommenting one of the the three lines: fieldLineList = ...
 
+    #---------------------------------------------
+    fieldLineList = CreateFieldLinesIter()
+    #fieldLineList = CreateFieldLinesC()
+    #fieldLineList = CreateFieldLinesSolveIVP()
+    #---------------------------------------------
 
     for charge in chargeList:
         charge.Draw(screen)
