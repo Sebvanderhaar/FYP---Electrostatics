@@ -3,7 +3,6 @@ from pygame.locals import *
 from OpenGL.GL import *
 import numpy as np
 from openGLDrawing import *
-import scipy.constants as cnst
 from OpenGL.GL.shaders import compileShader, compileProgram
 import time
 
@@ -93,6 +92,79 @@ void main() {
 }
 """
 
+line_shader = """
+#version 430
+
+layout(std430, binding = 3) buffer ResultBuffer {
+    vec2 result[];
+};
+
+layout(std430, binding = 4) buffer LineBuffer {
+    vec2 line[];
+};
+
+layout(std430, binding = 1) buffer PositionBuffer {
+    vec2 position[];
+};
+
+layout(local_size_x = 1) in;
+
+uniform uint i;
+uniform uint totIters;
+
+void main() {
+    uint pIndex = gl_GlobalInvocationID.x;
+
+    vec2 nextPoint = line[i + pIndex*(totIters + 1)] + 0.01*result[pIndex]/length(result[pIndex]);
+
+    line[i + pIndex*(totIters + 1) + 1] = nextPoint;
+    position[pIndex] = nextPoint;
+}
+"""
+
+vertex_shader_lines = """
+#version 430 core
+layout(std430, binding = 4) buffer LineBuffer{
+    vec2 line[];
+};
+
+uniform uint skip_interval;
+
+out vec2 startPoint;
+out vec2 endPoint;
+void main() {
+    int line_index = gl_VertexID;
+
+    if ((line_index + 1) % skip_interval != 0) {
+        startPoint = line[gl_VertexID];
+        endPoint = line[gl_VertexID + 1];
+    }
+}
+"""
+
+geometry_shader_lines = """
+#version 430 core
+layout(lines) in;
+layout(line_strip, max_vertices = 2) out;
+in vec2 startPoint[];
+in vec2 endPoint[];
+void main() {
+    gl_Position = vec4(startPoint[0], 0.0, 1.0);
+    EmitVertex();
+    gl_Position = vec4(endPoint[0], 0.0, 1.0);
+    EmitVertex();
+    EndPrimitive();
+}
+"""
+
+fragment_shader_lines = """
+#version 430 core
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(1.0, 1.0, 1.0, 1.0); // White color
+}
+"""
+
 class Charge:
     def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple):
         self.position: np.ndarray = position
@@ -136,8 +208,8 @@ def CreateCharges() -> list:
     constColour = (200,200,200)
 
     charge1 = Charge(np.array([0.25, 0.25]), 1, 0.05, constColour)
-    charge2 = Charge(np.array([0.75, 0.75]), -1, constRadius, constColour)
-    charge3 = Charge(np.array([0.25, 0.75]), 2, constRadius, constColour)
+    charge2 = Charge(np.array([0.75, 0.75]), 1, constRadius, constColour)
+    charge3 = Charge(np.array([0.25, 0.75]), -2, constRadius, constColour)
 
     chargeList = [charge1, charge2, charge3]
 
@@ -157,44 +229,71 @@ def initLines(chargeList, linesPerCharge) -> list:
 
     return lineList
 
-def GetForce(r, chargeList):
-    k = 1/(4*np.pi*cnst.epsilon_0)
-    forceArr = np.zeros((len(chargeList),2))
-    for index, charge in enumerate(chargeList):
-        r1 = r - charge.position
-        r1MagCubed = np.linalg.norm(r1)**3
-        constForce = (charge.magnitude*k)/r1MagCubed
+def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations):
+    numColsLoc = glGetUniformLocation(physicsProgram, "numPositions")
+    glUseProgram(physicsProgram)
+    glUniform1ui(numColsLoc, len(lineList))
 
-        forceArr[index] = constForce*r1
-    return np.sum(forceArr, axis=0)
+    glDispatchCompute(len(chargeList), len(lineList), 1)
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-def lineExtend(line, chargeList):
-    running = True
-    dl = 0.01
 
-    j = 0
-    while(running):
-        j += 1
-        force = GetForce(line.points[-1], chargeList)
-        forceMag = np.linalg.norm(force)
+    numChargesLoc = glGetUniformLocation(summingProgram, "numCharges")
+    numPosLoc = glGetUniformLocation(summingProgram, "numPos")
+    glUseProgram(summingProgram)
+    glUniform1ui(numChargesLoc, len(chargeList))
+    glUniform1ui(numPosLoc, len(lineList))
 
-        nextElem = line.points[-1] + (force/forceMag)*dl
-        line.points = np.vstack([line.points, nextElem])
+    glDispatchCompute(len(lineList), 1, 1)
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-        for charge in chargeList:
-            vec = charge.position - nextElem
-            if j > 200 or np.linalg.norm(nextElem) > 5:
-                running = False
 
-    return line
+    iterationLoc = glGetUniformLocation(lineProgram, "i")
+    totItersLoc = glGetUniformLocation(lineProgram, "totIters")
+    glUseProgram(lineProgram)
+    glUniform1ui(iterationLoc, i)
+    glUniform1ui(totItersLoc, iterations)
 
-def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram):
-    start = time.perf_counter()
-    dl = 0.1
+    glDispatchCompute(len(lineList), 1, 1)
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
+def bindBuffers(chargeList, lineList, iterations) -> tuple:
+    chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer = glGenBuffers(5)
+    
+    chargesDtype = [("position", "2f4"), ("magnitude", "f4"), ("buffer", "f4")]
+    chargesArray = np.zeros(len(chargeList), dtype=chargesDtype)
+    positionsArray = np.zeros(len(lineList), dtype="2f4")
+    forcesArray = np.zeros(len(chargeList) * len(lineList), dtype="2f4")
+    summingArray = np.zeros(len(lineList), dtype="2f4")
+    linesArray = np.zeros(len(lineList) * (iterations+1), dtype="2f4")
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, chargesBuffer)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, chargesArray.nbytes, chargesArray, GL_STREAM_DRAW)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, chargesBuffer)
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionsBuffer)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, positionsArray.nbytes, positionsArray, GL_STREAM_DRAW)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, positionsBuffer)
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, forcesBuffer)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, forcesArray.nbytes, forcesArray, GL_STREAM_DRAW)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, forcesBuffer)
+    
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, summingBuffer)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, summingArray.nbytes, summingArray, GL_STREAM_DRAW)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, summingBuffer)
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, lineBuffer)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, linesArray.nbytes, linesArray, GL_STREAM_DRAW)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, lineBuffer)
+
+    return chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer
+
+def writePosChargesLines(chargesBuffer, positionsBuffer, lineBuffer, chargeList, lineList, iterations):
     chargesDtype = [("position", "2f4"), ("magnitude", "f4"), ("buffer", "f4")]
     charges = np.zeros(len(chargeList), dtype=chargesDtype)
     positions = np.zeros(len(lineList), dtype="2f4")
+    lines = np.zeros(len(lineList)*(iterations+1), dtype="2f4")
 
     for index, charge in enumerate(chargeList):
         charges[index] = ([charge.position[0], charge.position[1]], charge.magnitude, 0)
@@ -202,102 +301,17 @@ def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram):
     for index, line in enumerate(lineList):
         positions[index] = line.points[-1]
 
-    forces = np.zeros((len(charges)*len(positions)), dtype="2f4")
-
-    results = np.zeros(len(positions), dtype="2f4")
-
-    chargesBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, chargesBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, charges.nbytes, charges, GL_STREAM_DRAW)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, chargesBuffer)
-
-    positionsBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionsBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, positions.nbytes, positions, GL_STREAM_DRAW)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, positionsBuffer)
-
-    forcesBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, forcesBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, forces.nbytes, forces, GL_STREAM_READ)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, forcesBuffer)
-
-    resultsBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, resultsBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, results.nbytes, results, GL_STREAM_READ)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, resultsBuffer)
-
-    bufferTime = time.perf_counter()
-
-    numColsLoc = glGetUniformLocation(physicsProgram, "numPositions")
-    glUseProgram(physicsProgram)
-    glUniform1ui(numColsLoc, len(positions))
-    startMem = time.perf_counter()
-    glDispatchCompute(len(charges), len(positions), 1)
-
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-    endMem = time.perf_counter()
-
-    numChargesLoc = glGetUniformLocation(summingProgram, "numCharges")
-    numPosLoc = glGetUniformLocation(summingProgram, "numPos")
-    glUseProgram(summingProgram)
-    glUniform1ui(numChargesLoc, len(charges))
-    glUniform1ui(numPosLoc, len(positions))
-    glDispatchCompute(len(positions), 1, 1)
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-    # Retrieve the results
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, resultsBuffer)
-    startRet = time.perf_counter()
-    result = np.frombuffer(glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, results.nbytes), dtype='2f4')
-    endRet = time.perf_counter()
-    #result = result.reshape((len(positions), 2), order="F")
-
-    outList = []
     for index, line in enumerate(lineList):
-        force = result[index]
-        forceMag = np.linalg.norm(force)
+        lines[index*(iterations+1)] = line.points[-1]
 
-        nextElem = line.points[-1] + (force/forceMag)*dl
-
-        line.Append(nextElem[0], nextElem[1])
-
-        outList.append(line)
-
-    print("retrieval: ", endRet - startRet)
-    print("Physics runtime: ", endMem - startMem)
-    print("Buffers: ", bufferTime - start)
-
-    return outList
-
-def defineBuffers(chargeList, lineList):
-    chargesDtype = [("position", "2f4"), ("magnitude", "f4"), ("buffer", "f4")]
-    charges = np.zeros(len(chargeList), dtype=chargesDtype)
-
-    positions = np.zeros(len(lineList), dtype="2f4")
-
-    forces = np.zeros((len(charges)*len(positions)), dtype="2f4")
-
-    results = np.zeros(len(positions), dtype="2f4")
-
-    chargesBuffer = glGenBuffers(1)
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, chargesBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, charges.nbytes, charges, GL_STREAM_DRAW)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, chargesBuffer)
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, charges.nbytes, charges)
 
-    positionsBuffer = glGenBuffers(1)
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionsBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, positions.nbytes, positions, GL_STREAM_DRAW)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, positionsBuffer)
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, positions.nbytes, positions)
 
-    forcesBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, forcesBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, forces.nbytes, forces, GL_STREAM_READ)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, forcesBuffer)
-
-    resultsBuffer = glGenBuffers(1)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, resultsBuffer)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, results.nbytes, results, GL_STREAM_READ)
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, resultsBuffer)
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, lineBuffer)
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, lines.nbytes, lines)
 
 def main():
     global windowWidth
@@ -307,14 +321,29 @@ def main():
     pygame.display.set_mode((windowWidth, windowHeight), DOUBLEBUF | OPENGL)
     glViewport(0, 0, windowWidth, windowHeight)
 
-    shader = compile_shader_program(vertex_shader, fragment_shader)
+    iterations = 200
+
     chargeList = CreateCharges()
+    lineList = initLines(chargeList, 8)
+
+    shader = compile_shader_program(vertex_shader, fragment_shader)
+
+    shader_program_lines = compileProgram(
+        compileShader(vertex_shader_lines, GL_VERTEX_SHADER),
+        compileShader(geometry_shader_lines, GL_GEOMETRY_SHADER),
+        compileShader(fragment_shader_lines, GL_FRAGMENT_SHADER)
+        )
 
     physicsShader = compileShader(physics_shader, GL_COMPUTE_SHADER)
     physicsProgram = compileProgram(physicsShader)
 
     summingShader = compileShader(summing_shader, GL_COMPUTE_SHADER)
     summingProgram = compileProgram(summingShader)
+
+    lineShader = compileShader(line_shader, GL_COMPUTE_SHADER)
+    lineProgram = compileProgram(lineShader)
+
+    chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer = bindBuffers(chargeList, lineList, iterations)
 
     running = True
     while running:
@@ -324,19 +353,20 @@ def main():
             for charge in chargeList:
                 charge.HandleDragging(event)
 
-        # Clear the screen
         glClear(GL_COLOR_BUFFER_BIT)
 
         lineList = initLines(chargeList, 8)
         
-        for _ in range(10):
-            lineList = lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram)
+        writePosChargesLines(chargesBuffer, positionsBuffer, lineBuffer, chargeList, lineList, iterations)
 
-        for line in lineList:
-            line.Draw(shader)
+        for i in range(iterations):
+            lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations)
 
-        
-        #Drawing
+        skip_interval_loc = glGetUniformLocation(shader_program_lines, "skip_interval")
+        glUseProgram(shader_program_lines)
+        glUniform1ui(skip_interval_loc, iterations + 1)
+        glDrawArrays(GL_LINE_STRIP, 0, len(lineList)*iterations)
+
         for i, charge in enumerate(chargeList):
             charge.Draw(shader)
 
