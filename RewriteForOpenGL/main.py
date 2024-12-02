@@ -5,183 +5,32 @@ import numpy as np
 from openGLDrawing import *
 from OpenGL.GL.shaders import compileShader, compileProgram
 import time
+import os
 
-vertex_shader = """
-#version 430
-layout(location = 0) in vec2 position;
-void main()
-{
-    gl_Position = vec4(position, 0.0, 1.0);
-}
-"""
 
-fragment_shader = """
-#version 430
-out vec4 color;
-void main()
-{
-    color = vec4(0.8, 0.2, 0.5, 1.0);  // Color for triangles and square (purple-pink)
-}
-"""
-
-physics_shader = """
-#version 430
-
-struct Charge {
-    vec2 position;
-    float magnitude;
-};
-
-layout(std430, binding = 0) buffer ChargesBuffer {
-    Charge charges[];
-};
-
-layout(std430, binding = 1) buffer PositionsBuffer {
-    vec2 r[];
-};
-
-layout(std430, binding = 2) buffer ForceBuffer {
-    vec2 force[];
-};
-
-layout(local_size_x = 1, local_size_y = 1) in;
-
-uniform uint numPositions;
-
-vec2 GetForce(uint cIndex, uint pIndex){
-    float k = 8.987551 * pow(10.0f, 9.0f);
-    vec2 r1 = r[pIndex] - charges[cIndex].position;
-    float r1MagCubed = pow(length(r1), 3.0f);
-    float forceConst = (k * charges[cIndex].magnitude) / r1MagCubed;
-
-    return forceConst*r1;
-}
-
-void main() {
-    uint cIndex = gl_GlobalInvocationID.x;
-    uint pIndex = gl_GlobalInvocationID.y;
-
-    uint index = pIndex + cIndex * numPositions;
-    force[index] = GetForce(cIndex, pIndex);
-}
-"""
-
-summing_shader = """
-#version 430
-
-layout(std430, binding = 2) buffer ForceBuffer {
-    vec2 force[];
-};
-
-layout(std430, binding = 3) buffer ResultBuffer {
-    vec2 result[];
-};
-
-layout(local_size_x = 1) in;
-
-uniform uint numPos;
-uniform uint numCharges;
-
-void main() {
-    uint pIndex = gl_GlobalInvocationID.x;
-    vec2 sum = vec2(0.0f, 0.0f);
-    for (uint sumIter = 0; sumIter < numCharges; sumIter++){
-        sum += force[pIndex + sumIter * numPos];
-    }
-    result[pIndex] = sum;
-}
-"""
-
-line_shader = """
-#version 430
-
-layout(std430, binding = 3) buffer ResultBuffer {
-    vec2 result[];
-};
-
-layout(std430, binding = 4) buffer LineBuffer {
-    vec2 line[];
-};
-
-layout(std430, binding = 1) buffer PositionBuffer {
-    vec2 position[];
-};
-
-layout(local_size_x = 1) in;
-
-uniform uint i;
-uniform uint totIters;
-
-void main() {
-    uint pIndex = gl_GlobalInvocationID.x;
-
-    vec2 nextPoint = line[i + pIndex*(totIters + 1)] + 0.01*result[pIndex]/length(result[pIndex]);
-
-    line[i + pIndex*(totIters + 1) + 1] = nextPoint;
-    position[pIndex] = nextPoint;
-}
-"""
-
-vertex_shader_lines = """
-#version 430 core
-layout(std430, binding = 4) buffer LineBuffer{
-    vec2 line[];
-};
-
-uniform uint skip_interval;
-
-out vec2 startPoint;
-out vec2 endPoint;
-void main() {
-    int line_index = gl_VertexID;
-
-    if ((line_index + 1) % skip_interval != 0) {
-        startPoint = line[gl_VertexID];
-        endPoint = line[gl_VertexID + 1];
-    }
-}
-"""
-
-geometry_shader_lines = """
-#version 430 core
-layout(lines) in;
-layout(line_strip, max_vertices = 2) out;
-in vec2 startPoint[];
-in vec2 endPoint[];
-void main() {
-    gl_Position = vec4(startPoint[0], 0.0, 1.0);
-    EmitVertex();
-    gl_Position = vec4(endPoint[0], 0.0, 1.0);
-    EmitVertex();
-    EndPrimitive();
-}
-"""
-
-fragment_shader_lines = """
-#version 430 core
-out vec4 fragColor;
-void main() {
-    fragColor = vec4(1.0, 1.0, 1.0, 1.0); // White color
-}
-"""
-
+#Container for all information and methods for a single charge
 class Charge:
-    def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple):
+    def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple, draw: bool):
         self.position: np.ndarray = position
         self.magnitude: float = magnitude
         self.radius: float = radius
         self.colour: tuple = colour
         self.dragging: bool = False
+        self.draw: bool = draw
 
     def Draw(self, shader) -> None:
-        drawCircle(shader, self.position, self.radius)
+        #from openGLDrawing.py
+        if self.draw:
+            drawCircle(shader, self.position, self.radius)
 
-    def HandleDragging(self, event: pygame.event) -> None:
-        mousePos = np.array(pygame.mouse.get_pos())
-        xMousePosOpenGL = ((mousePos[0])/400) - 1
-        yMousePosOpenGL = 1 - ((mousePos[1])/400)
+    #Called every frame, uses pygame events tracker
+    def HandleDragging(self, event: pygame.event, screen: pygame.display) -> None:
+        screenX, screenY = screen.get_size()
+        mousePos: tuple = np.array(pygame.mouse.get_pos())
+        xMousePosOpenGL: int = ((mousePos[0])/(screenX/2)) - 1
+        yMousePosOpenGL: int = 1 - ((mousePos[1])/(screenY/2))
 
-        distToMouse = np.linalg.norm(np.array([self.position[0] - xMousePosOpenGL, self.position[1] - yMousePosOpenGL]))
+        distToMouse: float = np.linalg.norm(np.array([self.position[0] - xMousePosOpenGL, self.position[1] - yMousePosOpenGL]))
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and distToMouse < self.radius:
             self.dragging = True
@@ -207,11 +56,13 @@ def CreateCharges() -> list:
     constRadius = 0.03
     constColour = (200,200,200)
 
-    charge1 = Charge(np.array([0.25, 0.25]), 1, 0.05, constColour)
-    charge2 = Charge(np.array([0.75, 0.75]), 1, constRadius, constColour)
-    charge3 = Charge(np.array([0.25, 0.75]), -2, constRadius, constColour)
+    charge1 = Charge(np.array([0.25, 0.25]), 1, 0.05, constColour, True)
+    charge2 = Charge(np.array([0.75, 0.75]), 2, constRadius, constColour, True)
+    charge3 = Charge(np.array([0.25, 0.75]), -1, constRadius, constColour, True)
 
-    chargeList = [charge1, charge2, charge3]
+    #chargeList = [charge1, charge2, charge3]
+
+    chargeList = []
 
     return chargeList
 
@@ -219,13 +70,26 @@ def initLines(chargeList, linesPerCharge) -> list:
     lineList = []
     for charge in chargeList:
         if charge.magnitude > 0:
-            totLines = linesPerCharge*charge.magnitude
+            totLines = round(np.ceil(linesPerCharge*charge.magnitude)) + 1
             for i in range(totLines):
                 initX = charge.position[0] + np.sin(2*np.pi*(i/totLines))*0.05
                 initY = charge.position[1] + np.cos(2*np.pi*(i/totLines))*0.05
 
                 line = Line(initX, initY)
                 lineList.append(line)
+
+    return lineList
+
+def initLinesCustom(numberOfLines) -> list:
+    lineList = []
+    xStart = -0.5
+    xEnd = 0.5
+
+    for i in range(numberOfLines):
+        lineX = xStart + i/numberOfLines
+        lineY = 0.75
+
+        lineList.append(Line(lineX, lineY))
 
     return lineList
 
@@ -313,66 +177,194 @@ def writePosChargesLines(chargesBuffer, positionsBuffer, lineBuffer, chargeList,
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, lineBuffer)
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, lines.nbytes, lines)
 
+def compileAllShader() -> tuple:
+    shaderFileNames = ["fragmentShader.glsl", "fragmentShaderLines.glsl", "geometryShader.glsl", "lineShader.glsl", "physicsShader.glsl", "summingShader.glsl", "vertexShader.glsl", "vertexShaderLines.glsl"]
+    shaderFileDict = {}
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    for filename in shaderFileNames:
+        filepath = os.path.join(base_dir, "shaders", filename)
+        with open(filepath, "r") as file:
+            shaderFileDict[filename] = file.read()
+    
+    mainShaderProgram = compileProgram(
+        compileShader(shaderFileDict["vertexShader.glsl"], GL_VERTEX_SHADER),
+        compileShader(shaderFileDict["fragmentShader.glsl"], GL_FRAGMENT_SHADER)
+        )
+
+    linesShaderProgram = compileProgram(
+        compileShader(shaderFileDict["vertexShaderLines.glsl"], GL_VERTEX_SHADER),
+        compileShader(shaderFileDict["geometryShader.glsl"], GL_GEOMETRY_SHADER),
+        compileShader(shaderFileDict["fragmentShaderLines.glsl"], GL_FRAGMENT_SHADER)
+        )
+
+    physicsProgram = compileProgram(compileShader(shaderFileDict["physicsShader.glsl"], GL_COMPUTE_SHADER))
+
+    summingProgram = compileProgram(compileShader(shaderFileDict["summingShader.glsl"], GL_COMPUTE_SHADER))
+
+    lineProgram = compileProgram(compileShader(shaderFileDict["lineShader.glsl"], GL_COMPUTE_SHADER))
+
+    return mainShaderProgram, linesShaderProgram, physicsProgram, summingProgram, lineProgram 
+
+def createChargeLine(startPos, endPos, mag):
+    newCharges = []
+
+    nCharges = 100
+    chargeDensity = 0.01 * mag
+    radius = 0.01
+    colour = (255, 255, 255)
+
+    for i in range(nCharges):
+        X = startPos[0] + (endPos[0] - startPos[0])*(i/nCharges)
+        Y = startPos[1] + (endPos[1] - startPos[1])*(i/nCharges)
+        if i % 10 == 0:
+            charge = Charge(np.array([X, Y]), chargeDensity/(nCharges/np.linalg.norm(endPos - startPos)), radius, colour, True)
+        else:
+            charge = Charge(np.array([X, Y]), chargeDensity/(nCharges/np.linalg.norm(endPos - startPos)), radius, colour, False)
+        newCharges.append(charge)
+
+    return newCharges
+
+def createParallelPlate(chargeList) -> list:
+    startPos: np.ndarray = np.array([-0.5, 0.8])
+    endPos: np.ndarray = np.array([0.5, 0.8])
+
+    chargeLine: list = createChargeLine(startPos, endPos, 1)
+
+    for item in chargeLine:
+        chargeList.append(item)
+    
+    startPos: np.ndarray = np.array([-0.5, -0.8])
+    endPos: np.ndarray = np.array([0.5, -0.8])
+
+    chargeLine: list = createChargeLine(startPos, endPos, -1)
+
+    for item in chargeLine:
+        chargeList.append(item)
+
+    return chargeList
+
+def drawLines(shader, lineList, iterations):
+    skip_interval_loc = glGetUniformLocation(shader, "skip_interval")
+    glUseProgram(shader)
+    glUniform1ui(skip_interval_loc, iterations + 1)
+    glDrawArrays(GL_LINE_STRIP, 0, len(lineList)*iterations)
+
+def createDipole(chargeList, centre) -> list:
+    magnitude = 0.01
+    split = 0.01
+    radius = 0.001
+    colour = (255, 255, 255)
+    
+    X = centre[0]
+    Ylower = centre[1] - split/2
+    Yupper = centre[1] + split/2
+
+    chargeUpper = Charge(np.array([X,Yupper]), -magnitude, radius, colour, False)
+    chargeLower = Charge(np.array([X,Ylower]), magnitude, radius, colour, False)
+
+    chargeList.append(chargeUpper)
+    chargeList.append(chargeLower)
+
+    return chargeList
+
+def createDipoleGrid(chargeList, xCount, yCount, xStart, yStart, xEnd, yEnd) -> list:
+    for i in range(xCount):
+        for j in range(yCount):
+            X = xStart + ((xEnd - xStart)/xCount)*i
+            Y = yStart + ((yEnd - yStart)/yCount)*j
+            
+            centre = [X, Y]
+
+            chargeList = createDipole(chargeList, centre)
+
+    return chargeList
+
 def main():
     global windowWidth
     global windowHeight
-    windowWidth, windowHeight = 800, 800
+    windowWidth, windowHeight = 1400, 1400
+
     pygame.init()
-    pygame.display.set_mode((windowWidth, windowHeight), DOUBLEBUF | OPENGL)
-    glViewport(0, 0, windowWidth, windowHeight)
 
-    iterations = 200
+    sceen: pygame.display = pygame.display.set_mode((windowWidth, windowHeight), DOUBLEBUF | OPENGL)
+    clock: pygame.time.Clock = pygame.time.Clock()
+    pygame.display.gl_set_attribute(pygame.GL_SWAP_CONTROL, 0)
 
-    chargeList = CreateCharges()
-    lineList = initLines(chargeList, 8)
+    iterations: int = 100
+    linesPerUnitCharge: int = 20
 
-    shader = compile_shader_program(vertex_shader, fragment_shader)
+    chargeList: list = CreateCharges()
+    chargeList: list = createDipoleGrid(chargeList, 200, 20, -1, -0.24, 1, 0.24)
+    chargeList: list = createParallelPlate(chargeList)
+    #lineList: list = initLines(chargeList, linesPerUnitCharge)
+    lineList: list = initLinesCustom(linesPerUnitCharge)
 
-    shader_program_lines = compileProgram(
-        compileShader(vertex_shader_lines, GL_VERTEX_SHADER),
-        compileShader(geometry_shader_lines, GL_GEOMETRY_SHADER),
-        compileShader(fragment_shader_lines, GL_FRAGMENT_SHADER)
-        )
-
-    physicsShader = compileShader(physics_shader, GL_COMPUTE_SHADER)
-    physicsProgram = compileProgram(physicsShader)
-
-    summingShader = compileShader(summing_shader, GL_COMPUTE_SHADER)
-    summingProgram = compileProgram(summingShader)
-
-    lineShader = compileShader(line_shader, GL_COMPUTE_SHADER)
-    lineProgram = compileProgram(lineShader)
-
+    shader, shader_program_lines, physicsProgram, summingProgram, lineProgram = compileAllShader()
+    
     chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer = bindBuffers(chargeList, lineList, iterations)
 
-    running = True
+    running: bool = True
+
     while running:
+        frameStart = time.perf_counter()
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
             for charge in chargeList:
-                charge.HandleDragging(event)
+                charge.HandleDragging(event, sceen)
 
         glClear(GL_COLOR_BUFFER_BIT)
 
-        lineList = initLines(chargeList, 8)
-        
-        writePosChargesLines(chargesBuffer, positionsBuffer, lineBuffer, chargeList, lineList, iterations)
+        #Gets the initial position of each line, using chargeList
+        #lineList = initLines(chargeList, linesPerUnitCharge)
+        lineListSetStart = time.perf_counter()
+        lineList: list = initLinesCustom(linesPerUnitCharge)
+        lineListSetEnd = time.perf_counter()
 
+        #Writes the required data to the Charges, positions and line buffers
+        #Positions is the init positions of each line
+        #Charges is a struct containing each charges pos and magnitude
+        #Lines is the init positions of each line, spread out such to fit each line's full data
+        buffersStart = time.perf_counter()
+        writePosChargesLines(chargesBuffer, positionsBuffer, lineBuffer, chargeList, lineList, iterations)
+        buffersEnd = time.perf_counter()
+
+        #Extends each line with number of iterations given
+        
+        physicsStart = time.perf_counter()
         for i in range(iterations):
             lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations)
+        physicsEnd = time.perf_counter()
 
-        skip_interval_loc = glGetUniformLocation(shader_program_lines, "skip_interval")
-        glUseProgram(shader_program_lines)
-        glUniform1ui(skip_interval_loc, iterations + 1)
-        glDrawArrays(GL_LINE_STRIP, 0, len(lineList)*iterations)
+        #Draw the lines, uses openGLs draw array method, with data from buffers already on GPU
+        drawLinesStart = time.perf_counter()
+        drawLines(shader_program_lines, lineList, iterations)
+        drawLinesEnd = time.perf_counter()
 
+        #Draws each charge, pulls data from python chargeList
+        drawChargesStart = time.perf_counter()
         for i, charge in enumerate(chargeList):
             charge.Draw(shader)
+        drawChargesEnd = time.perf_counter()
 
-        #Flip display
+        fps = clock.get_fps()
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print("FPS: ", fps)
+        print("Line List Set: ", (lineListSetEnd - lineListSetStart)*100*fps)
+        print("Buffers: ", (buffersEnd - buffersStart)*100*fps)
+        print("Physics: ", (physicsEnd - physicsStart)*100*fps)
+        print("Lines drawing: ", (drawLinesEnd - drawLinesStart)*100*fps)
+        print("Charges drawing: ", (drawChargesEnd - drawChargesStart)*100*fps)
+
+        flippingStart = time.perf_counter()
         pygame.display.flip()
-        pygame.time.wait(10)
+        clock.tick()
+        flippingEnd = time.perf_counter()
+
+        print("Flipping: ", (flippingEnd - flippingStart)*100*fps)
+        print("Frame total: ", (time.perf_counter() - frameStart)*100*fps)
 
     glDeleteProgram(shader)
     pygame.quit()
