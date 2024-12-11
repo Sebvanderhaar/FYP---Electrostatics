@@ -6,7 +6,7 @@ from openGLDrawing import *
 from OpenGL.GL.shaders import compileShader, compileProgram
 import time
 import os
-
+import csv
 
 #Container for all information and methods for a single charge
 class Charge:
@@ -60,9 +60,9 @@ def CreateCharges() -> list:
     charge2 = Charge(np.array([0.75, 0.75]), 2, constRadius, constColour, True)
     charge3 = Charge(np.array([0.25, 0.75]), -1, constRadius, constColour, True)
 
-    #chargeList = [charge1, charge2, charge3]
+    chargeList = [charge1, charge2, charge3]
 
-    chargeList = []
+    #chargeList = []
 
     return chargeList
 
@@ -228,7 +228,7 @@ def createChargeLine(startPos, endPos, mag):
 
 def createParallelPlate(chargeList) -> list:
     startPos: np.ndarray = np.array([-0.5, 0.8])
-    endPos: np.ndarray = np.array([0.5, 0.8])
+    endPos: np.ndarray = np.array([0.5, 0])
 
     chargeLine: list = createChargeLine(startPos, endPos, 1)
 
@@ -252,7 +252,7 @@ def drawLines(shader, lineList, iterations):
     glDrawArrays(GL_LINE_STRIP, 0, len(lineList)*iterations)
 
 def createDipole(chargeList, centre) -> list:
-    magnitude = 0.01
+    magnitude = 0.001
     split = 0.01
     radius = 0.001
     colour = (255, 255, 255)
@@ -281,6 +281,20 @@ def createDipoleGrid(chargeList, xCount, yCount, xStart, yStart, xEnd, yEnd) -> 
 
     return chargeList
 
+def logPerformance(setupDict, timingDataDict):
+    combinedDict = {**setupDict, **timingDataDict}
+    fieldNames = list(combinedDict.keys())
+    fileName = ""
+    filePath = f"RewriteForOpenGL\PerformanceLoggingData\\{fileName}.csv"
+    isFile = os.path.isfile(filePath)
+
+    with open(filePath, mode="a" if isFile else "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldNames)
+        if not isFile:
+            writer.writeheader()
+
+        writer.writerow(combinedDict)
+
 def main():
     global windowWidth
     global windowHeight
@@ -292,35 +306,41 @@ def main():
     clock: pygame.time.Clock = pygame.time.Clock()
     pygame.display.gl_set_attribute(pygame.GL_SWAP_CONTROL, 0)
 
-    iterations: int = 100
+    iterations: int = 10
     linesPerUnitCharge: int = 20
 
     chargeList: list = CreateCharges()
-    chargeList: list = createDipoleGrid(chargeList, 200, 20, -1, -0.24, 1, 0.24)
-    chargeList: list = createParallelPlate(chargeList)
-    #lineList: list = initLines(chargeList, linesPerUnitCharge)
-    lineList: list = initLinesCustom(linesPerUnitCharge)
+    #chargeList: list = createDipoleGrid(chargeList, 200, 20, -1, -0.24, 1, 0.24)
+    #chargeList: list = createParallelPlate(chargeList)
+    lineList: list = initLines(chargeList, linesPerUnitCharge)
+    #lineList: list = initLinesCustom(linesPerUnitCharge)
 
     shader, shader_program_lines, physicsProgram, summingProgram, lineProgram = compileAllShader()
     
-    chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer = bindBuffers(chargeList, lineList, iterations)
+    chargesBuffer, positionsBuffer, forcesBuffer, summingBuffer, lineBuffer = bindBuffers(chargeList, lineList, 10000)
 
     running: bool = True
+    frameIndex: int = -1
 
     while running:
+        frameIndex += 1
+        if frameIndex % 50 == 0:
+            iterations = round(iterations*2)
+
         frameStart = time.perf_counter()
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
             for charge in chargeList:
                 charge.HandleDragging(event, sceen)
+        draggingHandleEnd = time.perf_counter()
 
         glClear(GL_COLOR_BUFFER_BIT)
 
         #Gets the initial position of each line, using chargeList
-        #lineList = initLines(chargeList, linesPerUnitCharge)
+        lineList = initLines(chargeList, linesPerUnitCharge)
         lineListSetStart = time.perf_counter()
-        lineList: list = initLinesCustom(linesPerUnitCharge)
+        #lineList: list = initLinesCustom(linesPerUnitCharge)
         lineListSetEnd = time.perf_counter()
 
         #Writes the required data to the Charges, positions and line buffers
@@ -349,21 +369,59 @@ def main():
             charge.Draw(shader)
         drawChargesEnd = time.perf_counter()
 
-        fps = clock.get_fps()
-        os.system('cls' if os.name == 'nt' else 'clear')
-        print("FPS: ", fps)
-        print("Line List Set: ", (lineListSetEnd - lineListSetStart)*100*fps)
-        print("Buffers: ", (buffersEnd - buffersStart)*100*fps)
-        print("Physics: ", (physicsEnd - physicsStart)*100*fps)
-        print("Lines drawing: ", (drawLinesEnd - drawLinesStart)*100*fps)
-        print("Charges drawing: ", (drawChargesEnd - drawChargesStart)*100*fps)
-
         flippingStart = time.perf_counter()
         pygame.display.flip()
         clock.tick()
         flippingEnd = time.perf_counter()
 
-        print("Flipping: ", (flippingEnd - flippingStart)*100*fps)
+        clearingPrintStart = time.perf_counter()
+        fps = clock.get_fps()
+        os.system('cls' if os.name == 'nt' else 'clear')
+        clearingPrintEnd = time.perf_counter()
+
+        printBlockStart = time.perf_counter()
+        print("FPS: ", fps)
+        draggingPercent = (draggingHandleEnd - frameStart)*100*fps
+        print("Dragging managing: ", draggingPercent)
+        lineListSetPercent = (lineListSetEnd - lineListSetStart)*100*fps
+        print("Line List Set: ", lineListSetPercent)
+        buffersPercent = (buffersEnd - buffersStart)*100*fps
+        print("Buffers: ", buffersPercent)
+        physicsPercent = (physicsEnd - physicsStart)*100*fps
+        print("Physics: ", physicsPercent)
+        linesDrawingPercent = (drawLinesEnd - drawLinesStart)*100*fps
+        print("Lines drawing: ", linesDrawingPercent)
+        chargesDrawingPercent = (drawChargesEnd - drawChargesStart)*100*fps
+        print("Charges drawing: ", chargesDrawingPercent)
+        clearingPrintPercent = (clearingPrintEnd - clearingPrintStart)*100*fps
+        print("Clearing Print: ", clearingPrintPercent)
+        flippingPercent = (flippingEnd - flippingStart)*100*fps
+        print("Flipping: ", flippingPercent)
+
+        setupDict = {}
+        setupDict["Iterations"] = iterations
+        setupDict["ChargeCount"] = len(chargeList)
+        setupDict["LineCount"] = len(lineList)
+        setupDict["DrawChargeCount"] = len([item for item in chargeList if item.draw])
+
+        timingDataDict = {}
+        timingDataDict["frameIndex"] = frameIndex
+        timingDataDict["FPS"] = fps
+        timingDataDict["dragging"] = draggingPercent
+        timingDataDict["lineListSet"] = lineListSetPercent
+        timingDataDict["buffers"] = buffersPercent
+        timingDataDict["physics"] = physicsPercent
+        timingDataDict["lineDrawing"] = linesDrawingPercent
+        timingDataDict["chargeDrawing"] = chargesDrawingPercent
+        timingDataDict["clearingPrint"] = clearingPrintPercent
+        timingDataDict["flipping"] = flippingPercent
+
+        logPerformance(setupDict, timingDataDict)
+ 
+        printBlockEnd = time.perf_counter()
+
+        printBlockPercent = (printBlockEnd - printBlockStart)*100*fps
+        print("Print Block: ", printBlockPercent)
         print("Frame total: ", (time.perf_counter() - frameStart)*100*fps)
 
     glDeleteProgram(shader)

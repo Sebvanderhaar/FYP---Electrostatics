@@ -99,7 +99,6 @@ def DrawEquipotentialDE(surface: pygame.surface, charges: np.ndarray) -> None:
         pygame.draw.line(surface, (255, 0, 0), [x_solution[i], y_solution[i]], [x_solution[i+1], y_solution[i+1]])
 
 
-
 def GetAxisOfGivenLength(array: np.ndarray, length: float) -> int:
     for i in range(array.ndim):
         if array.shape[i] == length:

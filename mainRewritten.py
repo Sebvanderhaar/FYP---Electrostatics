@@ -108,7 +108,7 @@ def CreateFieldLinesSolveIVP() -> list: #3 - 6ms per line
     stop_near_charge.terminal = True
     stop_near_charge.direction = -1
 
-    constLinesPerUnitCharge = 8
+    constLinesPerUnitCharge = 3
     constMaxT = 10000
 
     k = 1/(4*np.pi*cnst.epsilon_0)
@@ -123,7 +123,7 @@ def CreateFieldLinesSolveIVP() -> list: #3 - 6ms per line
                 initPos: np.ndarray = np.array([initX, initY])
 
                 timeSpan = [0, constMaxT]
-                num_points = 1000
+                num_points = 100
                 t_eval = np.linspace(timeSpan[0], timeSpan[1], num_points)
 
                 solution = solve_ivp(dfdx, timeSpan, initPos, method='RK23', events=stop_near_charge, t_eval=t_eval)
@@ -132,7 +132,7 @@ def CreateFieldLinesSolveIVP() -> list: #3 - 6ms per line
 
                 fieldLine = Line(np.stack(solution.y, axis=-1))
                 fieldLineList.append(fieldLine)
-                print(time.time() - start)
+                #print(time.time() - start)
     
     return fieldLineList
 
@@ -186,7 +186,7 @@ def CreateFieldLinesODE() -> list: #Not currently working
 def CreateFieldLinesIter() -> list: #1 - 12ms per line
     linesPerUnitCharge = 8
     initRadius = 5
-    dl = 10
+    dl = 75
 
     fieldLineList = []
 
@@ -205,7 +205,7 @@ def CreateFieldLinesIter() -> list: #1 - 12ms per line
 
                 currentPos: np.ndarray = initPos
 
-                start = time.time()
+                start = time.perf_counter()
                 j = 0
                 while not ended: #between 0.3 and 0.8ms per loop ~50 loops
                     force: np.ndarray = GetForce(currentPos)
@@ -214,12 +214,12 @@ def CreateFieldLinesIter() -> list: #1 - 12ms per line
                     solutionArray.append(endPos)
                     
                     for charge in chargeList:
-                        if np.linalg.norm(endPos - charge.position) < 10 or np.linalg.norm(endPos) > 2000:
+                        if np.linalg.norm(endPos - charge.position) < dl or np.linalg.norm(endPos) > 2000:
                             ended = True
                     currentPos = endPos
                     j += 1
-                end = time.time()
-                print((end - start) / j, j)
+                end = time.perf_counter()
+                print(end - start, j)
                 fieldLine: Line = Line(np.array(solutionArray))
                 fieldLineList.append(fieldLine)
 
@@ -323,7 +323,7 @@ iterationMethod = ctypes.CDLL("./iterationMethod.dll")
 iterationMethod.getSolutionArray.argtypes = [ChargeC, ctypes.POINTER(ChargeC), ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int]
 iterationMethod.getSolutionArray.restype = ctypes.POINTER(ctypes.c_double * 2)
 
-windowSize: list = [2000, 1300]
+windowSize: list = [1000, 1000]
 
 pygame.init()
 
@@ -347,8 +347,8 @@ while True:
     #Change solving method by uncommenting one of the the three lines: fieldLineList = ...
 
     #---------------------------------------------
-    fieldLineList = CreateFieldLinesIter()
-    #fieldLineList = CreateFieldLinesC()
+    #fieldLineList = CreateFieldLinesIter()
+    fieldLineList = CreateFieldLinesC()
     #fieldLineList = CreateFieldLinesSolveIVP()
     #---------------------------------------------
 
