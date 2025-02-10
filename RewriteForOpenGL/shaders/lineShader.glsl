@@ -16,11 +16,12 @@ layout(local_size_x = 1) in;
 
 uniform uint i;
 uniform uint totIters;
+uniform float lineLength;
 
 void main() {
     uint pIndex = gl_GlobalInvocationID.x;
 
-    vec2 nextPoint = line[i + pIndex*(totIters + 1)] + 0.01*result[pIndex]/length(result[pIndex]);
+    vec2 nextPoint = line[i + pIndex*(totIters + 1)] + lineLength*result[pIndex]/length(result[pIndex]);
 
     line[i + pIndex*(totIters + 1) + 1] = nextPoint;
     position[pIndex] = nextPoint;

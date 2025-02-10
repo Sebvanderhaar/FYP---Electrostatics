@@ -8,6 +8,10 @@ import time
 import os
 import csv
 
+import tkinter as tk
+from threading import Thread
+from queue import Queue
+
 #Container for all information and methods for a single charge
 class Charge:
     def __init__(self, position: np.ndarray, magnitude: float, radius: float, colour: tuple, draw: bool):
@@ -57,10 +61,12 @@ def CreateCharges() -> list:
     constColour = (200,200,200)
 
     charge1 = Charge(np.array([0.25, 0.25]), 1, 0.05, constColour, True)
-    charge2 = Charge(np.array([0.75, 0.75]), 2, constRadius, constColour, True)
-    charge3 = Charge(np.array([0.25, 0.75]), -1, constRadius, constColour, True)
+    charge2 = Charge(np.array([0.75, 0.75]), 1, constRadius, constColour, True)
+    charge3 = Charge(np.array([0.25, 0.75]), 1, constRadius, constColour, True)
+    charge4 = Charge(np.array([-0.75, -0.75]), 1, constRadius, constColour, True)
+    charge5 = Charge(np.array([-0.25, -0.75]), 1, constRadius, constColour, True)
 
-    chargeList = [charge1, charge2, charge3]
+    chargeList = [charge1, charge2, charge3, charge4, charge5]
 
     #chargeList = []
 
@@ -72,8 +78,8 @@ def initLines(chargeList, linesPerCharge) -> list:
         if charge.magnitude > 0:
             totLines = round(np.ceil(linesPerCharge*charge.magnitude)) + 1
             for i in range(totLines):
-                initX = charge.position[0] + np.sin(2*np.pi*(i/totLines))*0.05
-                initY = charge.position[1] + np.cos(2*np.pi*(i/totLines))*0.05
+                initX = charge.position[0] + np.sin(2*np.pi*(i/totLines))*0.001
+                initY = charge.position[1] + np.cos(2*np.pi*(i/totLines))*0.001
 
                 line = Line(initX, initY)
                 lineList.append(line)
@@ -93,7 +99,7 @@ def initLinesCustom(numberOfLines) -> list:
 
     return lineList
 
-def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations):
+def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations, lineLength):
     numColsLoc = glGetUniformLocation(physicsProgram, "numPositions")
     glUseProgram(physicsProgram)
     glUniform1ui(numColsLoc, len(lineList))
@@ -114,9 +120,11 @@ def lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineP
 
     iterationLoc = glGetUniformLocation(lineProgram, "i")
     totItersLoc = glGetUniformLocation(lineProgram, "totIters")
+    lineLengthLoc = glGetUniformLocation(lineProgram, "lineLength")
     glUseProgram(lineProgram)
     glUniform1ui(iterationLoc, i)
     glUniform1ui(totItersLoc, iterations)
+    glUniform1f(lineLengthLoc, lineLength)
 
     glDispatchCompute(len(lineList), 1, 1)
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
@@ -210,7 +218,7 @@ def compileAllShader() -> tuple:
 def createChargeLine(startPos, endPos, mag):
     newCharges = []
 
-    nCharges = 100
+    nCharges = 10
     chargeDensity = 0.01 * mag
     radius = 0.01
     colour = (255, 255, 255)
@@ -284,7 +292,7 @@ def createDipoleGrid(chargeList, xCount, yCount, xStart, yStart, xEnd, yEnd) -> 
 def logPerformance(setupDict, timingDataDict):
     combinedDict = {**setupDict, **timingDataDict}
     fieldNames = list(combinedDict.keys())
-    fileName = ""
+    fileName = "Setup1Run1"
     filePath = f"RewriteForOpenGL\PerformanceLoggingData\\{fileName}.csv"
     isFile = os.path.isfile(filePath)
 
@@ -295,10 +303,69 @@ def logPerformance(setupDict, timingDataDict):
 
         writer.writerow(combinedDict)
 
+def runTkinter(queue):
+    def sliderChanged(value, type):
+        if type == 1:
+            queue.put(f"Lines:{value}")
+        elif type == 2:
+            queue.put(f"Line Length:{value}")
+        elif type == 3:
+            queue.put(f"Segment Count:{value}")
+
+    def sendText():
+        text = entry.get()
+        if text.strip():
+            queue.put(f"xText:{text}")
+            entry.delete(0, tk.END)
+
+    def check_queue():
+        for _ in range(queue.size):
+            message = queue.get()
+            if message.startswith("fps:"):
+                fps_value = message.split(":")[1]
+                label.config(text=f"FPS: {fps_value}")
+
+        root.after(1, check_queue)
+
+    root = tk.Tk()
+    root.title("Tkinter UI")
+    root.geometry("800x400")
+    
+    # Example of adding widgets
+    label = tk.Label(root, text="FPS: --", font=("Arial", 14))
+    label.pack(pady=10)
+    
+    button = tk.Button(root, text="New charge", command=sendText)
+    button.pack(pady=10)
+    
+    tk.Label(root, text="Line count").pack(pady=10)
+    lineCountSlider = tk.Scale(root, from_= 1, to=500, orient="horizontal", command=lambda v: sliderChanged(v, 1))
+    lineCountSlider.set(10)
+    lineCountSlider.pack(pady=10)
+
+    tk.Label(root, text="Line Length").pack(pady=5)
+    lineLengthVar = tk.DoubleVar(value=0.01)  # Variable to store float value
+    lineLengthSlider = tk.Scale(root, from_=0.00001, to=0.01, resolution=0.00001, orient="horizontal",
+                                variable=lineLengthVar, command=lambda v: sliderChanged(float(v), 2), length=600)
+    lineLengthSlider.set(0.0001)
+    lineLengthSlider.pack(pady=10)
+
+    tk.Label(root, text="Segment count").pack(pady=10)
+    lineCountSlider = tk.Scale(root, from_= 1, to=10000, orient="horizontal", command=lambda v: sliderChanged(v, 3))
+    lineCountSlider.set(10)
+    lineCountSlider.pack(pady=10)
+
+    entry = tk.Entry(root)
+    entry.pack(pady=5)
+    
+    root.after(1, check_queue)
+
+    root.mainloop()
+
 def main():
     global windowWidth
     global windowHeight
-    windowWidth, windowHeight = 1400, 1400
+    windowWidth, windowHeight = 1200, 1200
 
     pygame.init()
 
@@ -306,8 +373,8 @@ def main():
     clock: pygame.time.Clock = pygame.time.Clock()
     pygame.display.gl_set_attribute(pygame.GL_SWAP_CONTROL, 0)
 
-    iterations: int = 10
-    linesPerUnitCharge: int = 20
+    iterations: int = 1000
+    linesPerUnitCharge: int = 1000
 
     chargeList: list = CreateCharges()
     #chargeList: list = createDipoleGrid(chargeList, 200, 20, -1, -0.24, 1, 0.24)
@@ -321,11 +388,19 @@ def main():
 
     running: bool = True
     frameIndex: int = -1
+    lineLength: float = 0.01
+
+    queue = Queue()
+
+    tk_thread = Thread(target=runTkinter, args=(queue,), daemon=True)
+    tk_thread.start()
 
     while running:
         frameIndex += 1
-        if frameIndex % 50 == 0:
-            iterations = round(iterations*2)
+        #if frameIndex % 100 == 0:
+            #iterations += 10
+        #if frameIndex == 10000:
+            #running = False
 
         frameStart = time.perf_counter()
         for event in pygame.event.get():
@@ -334,6 +409,19 @@ def main():
             for charge in chargeList:
                 charge.HandleDragging(event, sceen)
         draggingHandleEnd = time.perf_counter()
+
+        while not queue.empty():
+            message = queue.get()
+            if message.startswith("Lines:"):
+                linesPerUnitCharge = int(message.split(":")[1]) - 1
+            elif message.startswith("xText:"):
+                xPos = float(message.split(":")[1])
+            elif message.startswith("Line Length:"):
+                lineLength = float(message.split(":")[1])
+            elif message.startswith("Segment Count:"):
+                iterations = int(message.split(":")[1])
+
+        print(linesPerUnitCharge)
 
         glClear(GL_COLOR_BUFFER_BIT)
 
@@ -355,7 +443,7 @@ def main():
         
         physicsStart = time.perf_counter()
         for i in range(iterations):
-            lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations)
+            lineExtendOpenGL(lineList, chargeList, physicsProgram, summingProgram, lineProgram, i, iterations, lineLength)
         physicsEnd = time.perf_counter()
 
         #Draw the lines, uses openGLs draw array method, with data from buffers already on GPU
@@ -376,9 +464,10 @@ def main():
 
         clearingPrintStart = time.perf_counter()
         fps = clock.get_fps()
-        os.system('cls' if os.name == 'nt' else 'clear')
+        #os.system('cls' if os.name == 'nt' else 'clear')
         clearingPrintEnd = time.perf_counter()
 
+        """
         printBlockStart = time.perf_counter()
         print("FPS: ", fps)
         draggingPercent = (draggingHandleEnd - frameStart)*100*fps
@@ -397,6 +486,7 @@ def main():
         print("Clearing Print: ", clearingPrintPercent)
         flippingPercent = (flippingEnd - flippingStart)*100*fps
         print("Flipping: ", flippingPercent)
+        print("Iterations: ", iterations)
 
         setupDict = {}
         setupDict["Iterations"] = iterations
@@ -416,13 +506,17 @@ def main():
         timingDataDict["clearingPrint"] = clearingPrintPercent
         timingDataDict["flipping"] = flippingPercent
 
-        logPerformance(setupDict, timingDataDict)
+        #logPerformance(setupDict, timingDataDict)
  
         printBlockEnd = time.perf_counter()
 
         printBlockPercent = (printBlockEnd - printBlockStart)*100*fps
         print("Print Block: ", printBlockPercent)
         print("Frame total: ", (time.perf_counter() - frameStart)*100*fps)
+        """
+        queue.put(f"fps:{str(fps)}")
+        print(fps)
+
 
     glDeleteProgram(shader)
     pygame.quit()

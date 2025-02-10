@@ -2,12 +2,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # Load the CSV file
-csv_file = 'RewriteForOpenGL\PerformanceLoggingData\\test4.csv'  # Replace with your file path
+csv_file = 'RewriteForOpenGL\PerformanceLoggingData\\Setup1Run1.csv'  # Replace with your file path
 data = pd.read_csv(csv_file)
 
 # Select two columns for plotting
-x_column = 'buffers'  # Replace with the name of your desired X-axis column
-y_column = 'physics'
+x_column = 'frameIndex'  # Replace with the name of your desired X-axis column
+y_column = 'chargeDrawing'
 
 fps = "FPS"  # Replace with the name of your desired Y-axis column
 
